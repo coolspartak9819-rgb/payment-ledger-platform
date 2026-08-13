@@ -17,6 +17,7 @@ are delivered through an outbox worker.
 - settlement reconciliation service for provider-report mismatches;
 - merchant webhooks with HMAC signatures, retry/backoff and JetStream DLQ;
 - merchant API keys, Redis-backed rate limiting and request trace IDs;
+- atomic payment state/ledger/outbox commands and merchant payouts;
 - fraud-risk decision boundary and provider adapter interface;
 - PostgreSQL persistence with an in-memory test store;
 - reconciliation-ready settlement model;
@@ -101,6 +102,17 @@ Use `ADMIN_API_KEY` on `POST /v1/admin/reconciliation` to submit provider
 settlement rows. The endpoint returns mismatches for a review workflow. Every
 HTTP response carries `x-request-id`; an inbound W3C `traceparent` is echoed
 to allow trace correlation across service boundaries.
+
+## Atomic money movement and payouts
+
+Payment authorization, capture and refund now commit the payment state, the
+balanced ledger entries and the corresponding outbox event in one PostgreSQL
+transaction. A failure rolls back all three records together.
+
+`POST /v1/payouts` moves funds from `merchant:<id>:available` to
+`merchant:<id>:payout_pending`. It is merchant-key protected and uses a
+PostgreSQL advisory transaction lock keyed by merchant and currency, preventing
+concurrent payout requests from overspending the available ledger balance.
 
 ## Kubernetes
 

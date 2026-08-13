@@ -22,6 +22,9 @@ type Store interface {
 	ClaimOutbox(context.Context, int) ([]domain.OutboxEvent, error)
 	MarkPublished(context.Context, string) error
 	RegisterWebhook(context.Context, string) (bool, error)
+	CommitPaymentCommand(context.Context, domain.PaymentCommand) (domain.Payment, error)
+	CreatePayout(context.Context, domain.Payout, []domain.LedgerEntry, domain.OutboxEvent) (domain.Payout, error)
+	AvailableBalance(context.Context, string, string) (decimal.Decimal, error)
 }
 
 type MemoryStore struct {
@@ -31,10 +34,11 @@ type MemoryStore struct {
 	outbox   map[string]domain.OutboxEvent
 	ledger   []domain.LedgerEntry
 	webhooks map[string]struct{}
+	payouts  map[string]domain.Payout
 }
 
 func NewMemory() *MemoryStore {
-	return &MemoryStore{payments: map[string]domain.Payment{}, keys: map[string]string{}, outbox: map[string]domain.OutboxEvent{}, webhooks: map[string]struct{}{}}
+	return &MemoryStore{payments: map[string]domain.Payment{}, keys: map[string]string{}, outbox: map[string]domain.OutboxEvent{}, webhooks: map[string]struct{}{}, payouts: map[string]domain.Payout{}}
 }
 func (s *MemoryStore) CreatePayment(_ context.Context, p domain.Payment, key string) (domain.Payment, bool, error) {
 	s.mu.Lock()
@@ -158,4 +162,71 @@ func (s *MemoryStore) RegisterWebhook(_ context.Context, id string) (bool, error
 	}
 	s.webhooks[id] = struct{}{}
 	return true, nil
+}
+func (s *MemoryStore) CommitPaymentCommand(_ context.Context, command domain.PaymentCommand) (domain.Payment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.payments[command.PaymentID]
+	if !ok {
+		return domain.Payment{}, ErrNotFound
+	}
+	if !p.CanTransition(command.Status) {
+		return domain.Payment{}, errors.New("invalid payment state transition")
+	}
+	if command.Status == domain.PaymentCaptured {
+		if err := p.ValidateCapture(command.Amount); err != nil {
+			return domain.Payment{}, err
+		}
+		p.CapturedAmount = p.CapturedAmount.Add(command.Amount)
+	}
+	if command.Status == domain.PaymentRefunded {
+		if err := p.ValidateRefund(command.Amount); err != nil {
+			return domain.Payment{}, err
+		}
+		p.RefundedAmount = p.RefundedAmount.Add(command.Amount)
+	}
+	if err := domain.ValidateBalanced(command.Ledger); err != nil {
+		return domain.Payment{}, err
+	}
+	p.Status = command.Status
+	if command.ProviderReference != "" {
+		p.ProviderReference = command.ProviderReference
+	}
+	s.payments[p.ID] = p
+	s.ledger = append(s.ledger, command.Ledger...)
+	payload := command.Event
+	payload.AggregateID = p.ID
+	s.outbox[payload.ID] = payload
+	return p, nil
+}
+func (s *MemoryStore) AvailableBalance(_ context.Context, merchant, currency string) (decimal.Decimal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	balance := decimal.Zero
+	for _, entry := range s.ledger {
+		if entry.AccountID == "merchant:"+merchant+":available" && entry.Currency == currency {
+			balance = balance.Add(entry.Credit).Sub(entry.Debit)
+		}
+	}
+	return balance, nil
+}
+func (s *MemoryStore) CreatePayout(_ context.Context, p domain.Payout, entries []domain.LedgerEntry, event domain.OutboxEvent) (domain.Payout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	balance := decimal.Zero
+	for _, e := range s.ledger {
+		if e.AccountID == "merchant:"+p.MerchantID+":available" && e.Currency == p.Currency {
+			balance = balance.Add(e.Credit).Sub(e.Debit)
+		}
+	}
+	if balance.LessThan(p.Amount) {
+		return domain.Payout{}, errors.New("insufficient available balance")
+	}
+	if err := domain.ValidateBalanced(entries); err != nil {
+		return domain.Payout{}, err
+	}
+	s.payouts[p.ID] = p
+	s.ledger = append(s.ledger, entries...)
+	s.outbox[event.ID] = event
+	return p, nil
 }

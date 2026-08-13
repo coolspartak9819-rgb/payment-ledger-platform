@@ -65,16 +65,9 @@ func (s *PaymentService) Authorize(ctx context.Context, id string) (domain.Payme
 		_, _ = s.Store.Transition(ctx, id, domain.PaymentFailed, "provider_error")
 		return p, err
 	}
-	updated, err := s.Store.Transition(ctx, id, domain.PaymentAuthorized, reference)
-	if err != nil {
-		return p, err
-	}
 	amount := p.Amount
-	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "customer:pending", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:pending", Currency: p.Currency, Credit: amount}}
-	if err := s.Store.AppendLedger(ctx, entries); err != nil {
-		return p, err
-	}
-	return s.enqueue(ctx, updated, "payment.authorized")
+	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "customer:pending", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:" + p.MerchantID + ":pending", Currency: p.Currency, Credit: amount}}
+	return s.commit(ctx, p, domain.PaymentAuthorized, decimal.Zero, reference, entries, "payment.authorized")
 }
 
 func (s *PaymentService) Capture(ctx context.Context, id string, amount decimal.Decimal) (domain.Payment, error) {
@@ -88,15 +81,8 @@ func (s *PaymentService) Capture(ctx context.Context, id string, amount decimal.
 	if err = s.Provider.Capture(ctx, p, amount); err != nil {
 		return p, err
 	}
-	updated, err := s.Store.ApplyAmount(ctx, id, domain.PaymentCaptured, amount)
-	if err != nil {
-		return p, err
-	}
-	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:pending", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:available", Currency: p.Currency, Credit: amount}}
-	if err = s.Store.AppendLedger(ctx, entries); err != nil {
-		return p, err
-	}
-	return s.enqueue(ctx, updated, "payment.captured")
+	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:" + p.MerchantID + ":pending", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:" + p.MerchantID + ":available", Currency: p.Currency, Credit: amount}}
+	return s.commit(ctx, p, domain.PaymentCaptured, amount, p.ProviderReference, entries, "payment.captured")
 }
 
 func (s *PaymentService) Refund(ctx context.Context, id string, amount decimal.Decimal) (domain.Payment, error) {
@@ -110,24 +96,23 @@ func (s *PaymentService) Refund(ctx context.Context, id string, amount decimal.D
 	if err = s.Provider.Refund(ctx, p, amount); err != nil {
 		return p, err
 	}
-	updated, err := s.Store.ApplyAmount(ctx, id, domain.PaymentRefunded, amount)
-	if err != nil {
-		return p, err
-	}
-	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:available", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "customer:refunded", Currency: p.Currency, Credit: amount}}
-	if err = s.Store.AppendLedger(ctx, entries); err != nil {
-		return p, err
-	}
-	return s.enqueue(ctx, updated, "payment.refunded")
+	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:" + p.MerchantID + ":available", Currency: p.Currency, Debit: amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "customer:refunded", Currency: p.Currency, Credit: amount}}
+	return s.commit(ctx, p, domain.PaymentRefunded, amount, p.ProviderReference, entries, "payment.refunded")
 }
 
-func (s *PaymentService) enqueue(ctx context.Context, p domain.Payment, eventType string) (domain.Payment, error) {
-	payload, err := json.Marshal(p)
+func (s *PaymentService) commit(ctx context.Context, p domain.Payment, status domain.PaymentStatus, amount decimal.Decimal, reference string, entries []domain.LedgerEntry, eventType string) (domain.Payment, error) {
+	expected := p
+	expected.Status = status
+	expected.ProviderReference = reference
+	if status == domain.PaymentCaptured {
+		expected.CapturedAmount = expected.CapturedAmount.Add(amount)
+	}
+	if status == domain.PaymentRefunded {
+		expected.RefundedAmount = expected.RefundedAmount.Add(amount)
+	}
+	payload, err := json.Marshal(expected)
 	if err != nil {
 		return p, err
 	}
-	if err := s.Store.Enqueue(ctx, domain.OutboxEvent{ID: uuid.NewString(), AggregateID: p.ID, EventType: eventType, Payload: string(payload)}); err != nil {
-		return p, err
-	}
-	return p, nil
+	return s.Store.CommitPaymentCommand(ctx, domain.PaymentCommand{PaymentID: p.ID, ProviderReference: reference, Status: status, Amount: amount, Ledger: entries, Event: domain.OutboxEvent{ID: uuid.NewString(), AggregateID: p.ID, EventType: eventType, Payload: string(payload)}})
 }

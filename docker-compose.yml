@@ -42,6 +42,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./migrations/001_payment_ledger.sql:/docker-entrypoint-initdb.d/001_payment_ledger.sql:ro
       - ./migrations/002_partial_payments.sql:/docker-entrypoint-initdb.d/002_partial_payments.sql:ro
+      - ./migrations/003_payouts.sql:/docker-entrypoint-initdb.d/003_payouts.sql:ro
   redis:
     image: redis:7-alpine
   nats:

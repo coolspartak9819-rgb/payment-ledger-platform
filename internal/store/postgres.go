@@ -171,4 +171,101 @@ func (s *PostgresStore) RegisterWebhook(ctx context.Context, id string) (bool, e
 	return command.RowsAffected() == 1, err
 }
 
+func (s *PostgresStore) CommitPaymentCommand(ctx context.Context, command domain.PaymentCommand) (domain.Payment, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var p domain.Payment
+	err = tx.QueryRow(ctx, `SELECT id,merchant_id,customer_id,currency,amount,captured_amount,refunded_amount,status,COALESCE(provider_reference,'') FROM payments WHERE id=$1 FOR UPDATE`, command.PaymentID).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.CapturedAmount, &p.RefundedAmount, &p.Status, &p.ProviderReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	if !p.CanTransition(command.Status) {
+		return domain.Payment{}, errors.New("invalid payment state transition")
+	}
+	if command.Status == domain.PaymentCaptured {
+		if err = p.ValidateCapture(command.Amount); err != nil {
+			return domain.Payment{}, err
+		}
+		p.CapturedAmount = p.CapturedAmount.Add(command.Amount)
+	}
+	if command.Status == domain.PaymentRefunded {
+		if err = p.ValidateRefund(command.Amount); err != nil {
+			return domain.Payment{}, err
+		}
+		p.RefundedAmount = p.RefundedAmount.Add(command.Amount)
+	}
+	if err = domain.ValidateBalanced(command.Ledger); err != nil {
+		return domain.Payment{}, err
+	}
+	p.Status = command.Status
+	if command.ProviderReference != "" {
+		p.ProviderReference = command.ProviderReference
+	}
+	_, err = tx.Exec(ctx, `UPDATE payments SET status=$2,captured_amount=$3,refunded_amount=$4,provider_reference=NULLIF($5,''),updated_at=now() WHERE id=$1`, p.ID, p.Status, p.CapturedAmount, p.RefundedAmount, p.ProviderReference)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	for _, entry := range command.Ledger {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries (id,payment_id,account_id,currency,debit,credit) VALUES ($1,$2,$3,$4,$5,$6)`, entry.ID, entry.PaymentID, entry.AccountID, entry.Currency, entry.Debit, entry.Credit); err != nil {
+			return domain.Payment{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)`, command.Event.ID, p.ID, command.Event.EventType, command.Event.Payload); err != nil {
+		return domain.Payment{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Payment{}, err
+	}
+	return p, nil
+}
+
+func (s *PostgresStore) AvailableBalance(ctx context.Context, merchant, currency string) (decimal.Decimal, error) {
+	var balance decimal.Decimal
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(SUM(credit-debit),0) FROM ledger_entries WHERE account_id=$1 AND currency=$2`, `merchant:`+merchant+`:available`, currency).Scan(&balance)
+	return balance, err
+}
+func (s *PostgresStore) CreatePayout(ctx context.Context, p domain.Payout, entries []domain.LedgerEntry, event domain.OutboxEvent) (domain.Payout, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payout{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var balance decimal.Decimal
+	// Ledger rows are immutable, so lock a stable merchant/currency key before reading the balance.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payout:"+p.MerchantID+":"+p.Currency); err != nil {
+		return domain.Payout{}, err
+	}
+	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(credit-debit),0) FROM ledger_entries WHERE account_id=$1 AND currency=$2`, `merchant:`+p.MerchantID+`:available`, p.Currency).Scan(&balance)
+	if err != nil {
+		return domain.Payout{}, err
+	}
+	if balance.LessThan(p.Amount) {
+		return domain.Payout{}, errors.New("insufficient available balance")
+	}
+	if err = domain.ValidateBalanced(entries); err != nil {
+		return domain.Payout{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO payouts (id,merchant_id,currency,amount,status) VALUES ($1,$2,$3,$4,$5)`, p.ID, p.MerchantID, p.Currency, p.Amount, p.Status); err != nil {
+		return domain.Payout{}, err
+	}
+	for _, entry := range entries {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries (id,payment_id,account_id,currency,debit,credit) VALUES ($1,NULL,$2,$3,$4,$5)`, entry.ID, entry.AccountID, entry.Currency, entry.Debit, entry.Credit); err != nil {
+			return domain.Payout{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)`, event.ID, p.ID, event.EventType, event.Payload); err != nil {
+		return domain.Payout{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Payout{}, err
+	}
+	return p, nil
+}
+
 var _ Store = (*PostgresStore)(nil)

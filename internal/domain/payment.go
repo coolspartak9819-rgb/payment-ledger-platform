@@ -92,3 +92,32 @@ type OutboxEvent struct {
 	ID, AggregateID, EventType, Payload string
 	Published                           bool
 }
+
+type PaymentCommand struct {
+	PaymentID, ProviderReference, EventType string
+	Status                                  PaymentStatus
+	Amount                                  decimal.Decimal
+	Ledger                                  []LedgerEntry
+	Event                                   OutboxEvent
+}
+
+type PayoutStatus string
+
+const (
+	PayoutPending PayoutStatus = "pending"
+	PayoutPaid    PayoutStatus = "paid"
+	PayoutFailed  PayoutStatus = "failed"
+)
+
+type Payout struct {
+	ID, MerchantID, Currency string
+	Amount                   decimal.Decimal
+	Status                   PayoutStatus `json:"status"`
+}
+
+func NewPayout(merchant, currency string, amount decimal.Decimal) (Payout, error) {
+	if merchant == "" || len(currency) != 3 || !amount.GreaterThan(decimal.Zero) {
+		return Payout{}, errors.New("invalid payout")
+	}
+	return Payout{ID: uuid.NewString(), MerchantID: merchant, Currency: strings.ToUpper(currency), Amount: amount, Status: PayoutPending}, nil
+}

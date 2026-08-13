@@ -33,8 +33,8 @@ jobs:
         with: { go-version: '1.23.x' }
       - run: DATABASE_URL=postgresql://payments:payments@localhost:5432/payments go run ./cmd/migrate
       - run: TEST_DATABASE_URL=postgresql://payments:payments@localhost:5432/payments go test ./internal/store -run Postgres
-      - run: DATABASE_URL=postgresql://payments:payments@localhost:5432/payments NATS_URL=nats://localhost:4222 go run ./cmd/api > api.log 2>&1 &
+      - run: DATABASE_URL=postgresql://payments:payments@localhost:5432/payments NATS_URL=nats://localhost:4222 MERCHANT_API_KEYS=e2e-key:e2e-merchant go run ./cmd/api > api.log 2>&1 &
       - run: for i in $(seq 1 20); do curl -fsS http://localhost:8080/readyz && break || sleep 1; done
-      - run: sh scripts/e2e.sh
+      - run: E2E_MERCHANT_API_KEY=e2e-key sh scripts/e2e.sh
       - if: always()
         run: cat api.log || true

@@ -56,6 +56,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/payments/{id}/authorize", protect(s.authorize))
 	mux.Handle("POST /v1/payments/{id}/capture", protect(s.capture))
 	mux.Handle("POST /v1/payments/{id}/refund", protect(s.refund))
+	mux.Handle("POST /v1/payouts", protect(s.createPayout))
 	mux.HandleFunc("POST /v1/provider/webhooks", s.webhook)
 	mux.HandleFunc("POST /v1/admin/reconciliation", s.reconcile)
 	return requestTracing(mux)
@@ -158,6 +159,33 @@ func (s *Server) refund(w http.ResponseWriter, r *http.Request) {
 		write(w, 422, map[string]string{"error": err.Error()})
 		return
 	}
+}
+func (s *Server) createPayout(w http.ResponseWriter, r *http.Request) {
+	merchant := merchantFromContext(r.Context())
+	if merchant == "" {
+		write(w, 403, map[string]string{"error": "merchant API keys are required for payouts"})
+		return
+	}
+	var request struct {
+		Currency string `json:"currency"`
+		Amount   string `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		write(w, 400, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	amount, err := decimal.NewFromString(request.Amount)
+	if err != nil {
+		write(w, 422, map[string]string{"error": "amount must be decimal"})
+		return
+	}
+	payout, err := service.PayoutService{Store: s.payments.Store}.Create(r.Context(), merchant, request.Currency, amount)
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	s.metrics.Inc("payouts_created")
+	write(w, 201, payout)
 }
 func (s *Server) ownsPayment(w http.ResponseWriter, r *http.Request, id string) bool {
 	merchant := merchantFromContext(r.Context())

@@ -14,6 +14,8 @@ are delivered through an outbox worker.
 - double-entry ledger with debit/credit balance validation;
 - transactional outbox for provider and webhook events;
 - NATS JetStream publisher with broker-level event de-duplication;
+- settlement reconciliation service for provider-report mismatches;
+- merchant webhooks with HMAC signatures, retry/backoff and JetStream DLQ;
 - fraud-risk decision boundary and provider adapter interface;
 - PostgreSQL persistence with an in-memory test store;
 - reconciliation-ready settlement model;
@@ -32,6 +34,7 @@ go test ./...
 go vet ./...
 docker compose up --build
 go run ./scripts/load.go
+sh scripts/e2e.sh
 ```
 
 The load scenario defaults to 500 concurrent-safe create requests. Adjust it
@@ -74,6 +77,16 @@ idempotency key and signed webhooks before moving funds to `captured`.
 When `NATS_URL` is configured, the worker publishes outbox events to the
 `payments.events` JetStream subject with the outbox event ID as `Nats-Msg-Id`.
 JetStream then suppresses duplicate broker publishes during retry windows.
+
+`ReconciliationService` compares provider settlement lines with captured ledger
+amounts and returns explicit mismatches such as unknown provider references or
+amount differences. In a production deployment these mismatches feed a review
+queue rather than being silently corrected.
+
+Set `MERCHANT_WEBHOOK_URL` and `MERCHANT_WEBHOOK_SECRET` on the worker to
+deliver payment events to a merchant endpoint. Delivery retries three times
+with bounded backoff. Failures are retained in `payments.webhooks.dlq` for
+review, while normal payment events remain in `payments.events`.
 
 ## Kubernetes
 

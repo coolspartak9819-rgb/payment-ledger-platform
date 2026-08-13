@@ -29,6 +29,9 @@ func main() {
 		}
 		defer func() { _ = closeNATS() }()
 		publisher = natsPublisher
+		if webhookURL := os.Getenv("MERCHANT_WEBHOOK_URL"); webhookURL != "" {
+			publisher = service.CompositePublisher{publisher, service.MerchantWebhookPublisher{URL: webhookURL, Secret: os.Getenv("MERCHANT_WEBHOOK_SECRET"), DeadLetter: natsPublisher.DeadLetter()}}
+		}
 	}
 	worker := service.OutboxWorker{Store: store.NewPostgres(pool), Publisher: publisher}
 	for {

@@ -20,6 +20,10 @@ spec:
               valueFrom: { secretKeyRef: { name: payment-platform, key: DATABASE_URL } }
             - name: NATS_URL
               valueFrom: { secretKeyRef: { name: payment-platform, key: NATS_URL } }
+            - name: MERCHANT_WEBHOOK_URL
+              valueFrom: { secretKeyRef: { name: payment-platform, key: MERCHANT_WEBHOOK_URL } }
+            - name: MERCHANT_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: payment-platform, key: MERCHANT_WEBHOOK_SECRET } }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 256Mi }

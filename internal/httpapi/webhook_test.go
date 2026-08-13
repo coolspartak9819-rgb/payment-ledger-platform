@@ -31,7 +31,7 @@ func TestSignedWebhookCapturesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := "webhook-secret"
-	payload := []byte(`{"id":"event-1","type":"payment.captured","payment_id":"` + p.ID + `"}`)
+	payload := []byte(`{"id":"event-1","type":"payment.captured","payment_id":"` + p.ID + `","amount":"10.00"}`)
 	handler := New(payments, secret).Routes()
 	request := httptest.NewRequest(http.MethodPost, "/v1/provider/webhooks", bytes.NewReader(payload))
 	request.Header.Set("x-provider-signature", signature(secret, payload))

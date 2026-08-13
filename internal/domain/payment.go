@@ -24,6 +24,8 @@ type Payment struct {
 	CustomerID        string          `json:"customer_id"`
 	Currency          string          `json:"currency"`
 	Amount            decimal.Decimal `json:"amount"`
+	CapturedAmount    decimal.Decimal `json:"captured_amount"`
+	RefundedAmount    decimal.Decimal `json:"refunded_amount"`
 	Status            PaymentStatus   `json:"status"`
 	ProviderReference string          `json:"provider_reference,omitempty"`
 }
@@ -47,7 +49,20 @@ func NewPayment(in CreatePayment) (Payment, error) {
 }
 
 func (p Payment) CanTransition(to PaymentStatus) bool {
-	return map[PaymentStatus]map[PaymentStatus]bool{PaymentCreated: {PaymentAuthorized: true, PaymentFailed: true}, PaymentAuthorized: {PaymentCaptured: true, PaymentFailed: true}, PaymentCaptured: {PaymentRefunded: true}}[p.Status][to]
+	return map[PaymentStatus]map[PaymentStatus]bool{PaymentCreated: {PaymentAuthorized: true, PaymentFailed: true}, PaymentAuthorized: {PaymentCaptured: true, PaymentFailed: true}, PaymentCaptured: {PaymentCaptured: true, PaymentRefunded: true}, PaymentRefunded: {PaymentRefunded: true}}[p.Status][to]
+}
+
+func (p Payment) ValidateCapture(amount decimal.Decimal) error {
+	if !amount.GreaterThan(decimal.Zero) || p.CapturedAmount.Add(amount).GreaterThan(p.Amount) {
+		return errors.New("capture amount exceeds remaining authorized amount")
+	}
+	return nil
+}
+func (p Payment) ValidateRefund(amount decimal.Decimal) error {
+	if !amount.GreaterThan(decimal.Zero) || p.RefundedAmount.Add(amount).GreaterThan(p.CapturedAmount) {
+		return errors.New("refund amount exceeds captured amount")
+	}
+	return nil
 }
 
 type LedgerEntry struct {

@@ -73,16 +73,61 @@ func TestCaptureAndRefundCompletePaymentLifecycle(t *testing.T) {
 	if _, err = s.Authorize(context.Background(), p.ID); err != nil {
 		t.Fatal(err)
 	}
-	captured, err := s.Capture(context.Background(), p.ID)
+	captured, err := s.Capture(context.Background(), p.ID, decimal.RequireFromString("24.50"))
 	if err != nil || captured.Status != domain.PaymentCaptured {
 		t.Fatalf("capture status=%s err=%v", captured.Status, err)
 	}
-	refunded, err := s.Refund(context.Background(), p.ID)
+	refunded, err := s.Refund(context.Background(), p.ID, decimal.RequireFromString("24.50"))
 	if err != nil || refunded.Status != domain.PaymentRefunded {
 		t.Fatalf("refund status=%s err=%v", refunded.Status, err)
 	}
 	events, err := s.Store.ClaimOutbox(context.Background(), 10)
 	if err != nil || len(events) != 3 {
 		t.Fatalf("expected 3 lifecycle events, got %d, error=%v", len(events), err)
+	}
+}
+func TestPartialCaptureAndRefundRejectOverpayment(t *testing.T) {
+	s := newService("1000")
+	p, _, err := s.Create(context.Background(), input("100"), "order-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Authorize(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := s.Capture(context.Background(), p.ID, decimal.NewFromInt(60))
+	if err != nil || !captured.CapturedAmount.Equal(decimal.NewFromInt(60)) {
+		t.Fatalf("capture=%s err=%v", captured.CapturedAmount, err)
+	}
+	refunded, err := s.Refund(context.Background(), p.ID, decimal.NewFromInt(20))
+	if err != nil || !refunded.RefundedAmount.Equal(decimal.NewFromInt(20)) {
+		t.Fatalf("refund=%s err=%v", refunded.RefundedAmount, err)
+	}
+	if _, err = s.Refund(context.Background(), p.ID, decimal.NewFromInt(50)); err == nil {
+		t.Fatal("expected refund limit rejection")
+	}
+	if _, err = s.Capture(context.Background(), p.ID, decimal.NewFromInt(50)); err == nil {
+		t.Fatal("expected capture limit rejection")
+	}
+}
+func TestMultiplePartialRefundsAreAllowedWithinCapturedLimit(t *testing.T) {
+	s := newService("1000")
+	p, _, err := s.Create(context.Background(), input("100"), "order-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Authorize(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Capture(context.Background(), p.ID, decimal.NewFromInt(100)); err != nil {
+		t.Fatal(err)
+	}
+	refunded, err := s.Refund(context.Background(), p.ID, decimal.NewFromInt(30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refunded, err = s.Refund(context.Background(), p.ID, decimal.NewFromInt(40))
+	if err != nil || !refunded.RefundedAmount.Equal(decimal.NewFromInt(70)) {
+		t.Fatalf("refunded=%s err=%v", refunded.RefundedAmount, err)
 	}
 }

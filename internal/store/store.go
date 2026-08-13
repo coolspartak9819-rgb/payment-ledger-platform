@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/coolspartak9819-rgb/payment-ledger-platform/internal/domain"
+	"github.com/shopspring/decimal"
 )
 
 var ErrNotFound = errors.New("payment not found")
@@ -13,7 +14,9 @@ var ErrNotFound = errors.New("payment not found")
 type Store interface {
 	CreatePayment(context.Context, domain.Payment, string) (domain.Payment, bool, error)
 	GetPayment(context.Context, string) (domain.Payment, error)
+	GetPaymentByProviderReference(context.Context, string) (domain.Payment, error)
 	Transition(context.Context, string, domain.PaymentStatus, string) (domain.Payment, error)
+	ApplyAmount(context.Context, string, domain.PaymentStatus, decimal.Decimal) (domain.Payment, error)
 	AppendLedger(context.Context, []domain.LedgerEntry) error
 	Enqueue(context.Context, domain.OutboxEvent) error
 	ClaimOutbox(context.Context, int) ([]domain.OutboxEvent, error)
@@ -52,6 +55,16 @@ func (s *MemoryStore) GetPayment(_ context.Context, id string) (domain.Payment, 
 	}
 	return p, nil
 }
+func (s *MemoryStore) GetPaymentByProviderReference(_ context.Context, reference string) (domain.Payment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.payments {
+		if p.ProviderReference == reference {
+			return p, nil
+		}
+	}
+	return domain.Payment{}, ErrNotFound
+}
 func (s *MemoryStore) Transition(_ context.Context, id string, to domain.PaymentStatus, reference string) (domain.Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,6 +76,37 @@ func (s *MemoryStore) Transition(_ context.Context, id string, to domain.Payment
 		return domain.Payment{}, errors.New("invalid payment state transition")
 	}
 	p.Status, p.ProviderReference = to, reference
+	s.payments[id] = p
+	return p, nil
+}
+func (s *MemoryStore) ApplyAmount(_ context.Context, id string, action domain.PaymentStatus, amount decimal.Decimal) (domain.Payment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.payments[id]
+	if !ok {
+		return domain.Payment{}, ErrNotFound
+	}
+	if action == domain.PaymentCaptured {
+		if err := p.ValidateCapture(amount); err != nil {
+			return domain.Payment{}, err
+		}
+		if !p.CanTransition(domain.PaymentCaptured) {
+			return domain.Payment{}, errors.New("invalid payment state transition")
+		}
+		p.CapturedAmount = p.CapturedAmount.Add(amount)
+		p.Status = domain.PaymentCaptured
+	} else if action == domain.PaymentRefunded {
+		if err := p.ValidateRefund(amount); err != nil {
+			return domain.Payment{}, err
+		}
+		if !p.CanTransition(domain.PaymentRefunded) {
+			return domain.Payment{}, errors.New("invalid payment state transition")
+		}
+		p.RefundedAmount = p.RefundedAmount.Add(amount)
+		p.Status = domain.PaymentRefunded
+	} else {
+		return domain.Payment{}, errors.New("unsupported amount action")
+	}
 	s.payments[id] = p
 	return p, nil
 }

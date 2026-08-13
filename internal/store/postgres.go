@@ -7,6 +7,7 @@ import (
 	"github.com/coolspartak9819-rgb/payment-ledger-platform/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 )
 
 type PostgresStore struct{ pool *pgxpool.Pool }
@@ -43,11 +44,63 @@ func (s *PostgresStore) CreatePayment(ctx context.Context, payment domain.Paymen
 
 func (s *PostgresStore) GetPayment(ctx context.Context, id string) (domain.Payment, error) {
 	var p domain.Payment
-	err := s.pool.QueryRow(ctx, `SELECT id,merchant_id,customer_id,currency,amount,status,COALESCE(provider_reference,'') FROM payments WHERE id=$1`, id).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.Status, &p.ProviderReference)
+	err := s.pool.QueryRow(ctx, `SELECT id,merchant_id,customer_id,currency,amount,captured_amount,refunded_amount,status,COALESCE(provider_reference,'') FROM payments WHERE id=$1`, id).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.CapturedAmount, &p.RefundedAmount, &p.Status, &p.ProviderReference)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, ErrNotFound
 	}
 	return p, err
+}
+func (s *PostgresStore) GetPaymentByProviderReference(ctx context.Context, reference string) (domain.Payment, error) {
+	var p domain.Payment
+	err := s.pool.QueryRow(ctx, `SELECT id,merchant_id,customer_id,currency,amount,captured_amount,refunded_amount,status,COALESCE(provider_reference,'') FROM payments WHERE provider_reference=$1`, reference).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.CapturedAmount, &p.RefundedAmount, &p.Status, &p.ProviderReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, ErrNotFound
+	}
+	return p, err
+}
+func (s *PostgresStore) ApplyAmount(ctx context.Context, id string, action domain.PaymentStatus, amount decimal.Decimal) (domain.Payment, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var p domain.Payment
+	err = tx.QueryRow(ctx, `SELECT id,merchant_id,customer_id,currency,amount,captured_amount,refunded_amount,status,COALESCE(provider_reference,'') FROM payments WHERE id=$1 FOR UPDATE`, id).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.CapturedAmount, &p.RefundedAmount, &p.Status, &p.ProviderReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	if action == domain.PaymentCaptured {
+		if err = p.ValidateCapture(amount); err != nil {
+			return domain.Payment{}, err
+		}
+		if !p.CanTransition(action) {
+			return domain.Payment{}, errors.New("invalid payment state transition")
+		}
+		p.CapturedAmount = p.CapturedAmount.Add(amount)
+		p.Status = action
+	} else if action == domain.PaymentRefunded {
+		if err = p.ValidateRefund(amount); err != nil {
+			return domain.Payment{}, err
+		}
+		if !p.CanTransition(action) {
+			return domain.Payment{}, errors.New("invalid payment state transition")
+		}
+		p.RefundedAmount = p.RefundedAmount.Add(amount)
+		p.Status = action
+	} else {
+		return domain.Payment{}, errors.New("unsupported amount action")
+	}
+	_, err = tx.Exec(ctx, `UPDATE payments SET status=$2,captured_amount=$3,refunded_amount=$4,updated_at=now() WHERE id=$1`, id, p.Status, p.CapturedAmount, p.RefundedAmount)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Payment{}, err
+	}
+	return p, nil
 }
 
 func (s *PostgresStore) Transition(ctx context.Context, id string, to domain.PaymentStatus, reference string) (domain.Payment, error) {
@@ -62,7 +115,7 @@ func (s *PostgresStore) Transition(ctx context.Context, id string, to domain.Pay
 }
 func (s *PostgresStore) update(ctx context.Context, id string, status domain.PaymentStatus, reference string) (domain.Payment, error) {
 	var p domain.Payment
-	err := s.pool.QueryRow(ctx, `UPDATE payments SET status=$2,provider_reference=NULLIF($3,''),updated_at=now() WHERE id=$1 RETURNING id,merchant_id,customer_id,currency,amount,status,COALESCE(provider_reference,'')`, id, status, reference).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.Status, &p.ProviderReference)
+	err := s.pool.QueryRow(ctx, `UPDATE payments SET status=$2,provider_reference=NULLIF($3,''),updated_at=now() WHERE id=$1 RETURNING id,merchant_id,customer_id,currency,amount,captured_amount,refunded_amount,status,COALESCE(provider_reference,'')`, id, status, reference).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.Currency, &p.Amount, &p.CapturedAmount, &p.RefundedAmount, &p.Status, &p.ProviderReference)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, ErrNotFound
 	}

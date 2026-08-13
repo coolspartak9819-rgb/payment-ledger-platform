@@ -85,20 +85,43 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, p)
 }
 func (s *Server) capture(w http.ResponseWriter, r *http.Request) {
-	p, err := s.payments.Capture(r.Context(), r.PathValue("id"))
+	amount, err := requestAmount(r)
+	if err == nil {
+		var p domain.Payment
+		p, err = s.payments.Capture(r.Context(), r.PathValue("id"), amount)
+		if err == nil {
+			write(w, 200, p)
+			return
+		}
+	}
 	if err != nil {
 		write(w, 422, map[string]string{"error": err.Error()})
 		return
 	}
-	write(w, 200, p)
 }
 func (s *Server) refund(w http.ResponseWriter, r *http.Request) {
-	p, err := s.payments.Refund(r.Context(), r.PathValue("id"))
+	amount, err := requestAmount(r)
+	if err == nil {
+		var p domain.Payment
+		p, err = s.payments.Refund(r.Context(), r.PathValue("id"), amount)
+		if err == nil {
+			write(w, 200, p)
+			return
+		}
+	}
 	if err != nil {
 		write(w, 422, map[string]string{"error": err.Error()})
 		return
 	}
-	write(w, 200, p)
+}
+func requestAmount(r *http.Request) (decimal.Decimal, error) {
+	var request struct {
+		Amount string `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.NewFromString(request.Amount)
 }
 func write(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("content-type", "application/json")

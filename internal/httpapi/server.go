@@ -58,7 +58,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/payments/{id}/refund", protect(s.refund))
 	mux.Handle("POST /v1/payouts", protect(s.createPayout))
 	mux.HandleFunc("POST /v1/provider/webhooks", s.webhook)
+	mux.HandleFunc("POST /v1/provider/payout-webhooks", s.payoutWebhook)
 	mux.HandleFunc("POST /v1/admin/reconciliation", s.reconcile)
+	mux.HandleFunc("POST /v1/admin/disputes", s.openDispute)
+	mux.HandleFunc("POST /v1/admin/disputes/{id}/resolve", s.resolveDispute)
 	return requestTracing(mux)
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +236,58 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Inc("reconciliation_mismatches")
 	}
 	write(w, 200, map[string]any{"mismatches": mismatches})
+}
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if s.adminKey == "" || r.Header.Get("x-admin-api-key") != s.adminKey {
+		write(w, 401, map[string]string{"error": "valid x-admin-api-key is required"})
+		return false
+	}
+	return true
+}
+func (s *Server) openDispute(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var request struct {
+		PaymentID string `json:"payment_id"`
+		Reason    string `json:"reason"`
+		Amount    string `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		write(w, 400, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	amount, err := decimal.NewFromString(request.Amount)
+	if err != nil {
+		write(w, 422, map[string]string{"error": "amount must be decimal"})
+		return
+	}
+	d, err := service.DisputeService{Store: s.payments.Store}.Open(r.Context(), request.PaymentID, request.Reason, amount)
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	s.metrics.Inc("disputes_opened")
+	write(w, 201, d)
+}
+func (s *Server) resolveDispute(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var request struct {
+		MerchantWins bool `json:"merchant_wins"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		write(w, 400, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	d, err := service.DisputeService{Store: s.payments.Store}.Resolve(r.Context(), r.PathValue("id"), request.MerchantWins)
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	s.metrics.Inc("disputes_" + string(d.Status))
+	write(w, 200, d)
 }
 func requestAmount(r *http.Request) (decimal.Decimal, error) {
 	var request struct {

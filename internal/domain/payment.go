@@ -112,6 +112,7 @@ const (
 type Payout struct {
 	ID, MerchantID, Currency string
 	Amount                   decimal.Decimal
+	ProviderReference        string       `json:"provider_reference,omitempty"`
 	Status                   PayoutStatus `json:"status"`
 }
 
@@ -120,4 +121,25 @@ func NewPayout(merchant, currency string, amount decimal.Decimal) (Payout, error
 		return Payout{}, errors.New("invalid payout")
 	}
 	return Payout{ID: uuid.NewString(), MerchantID: merchant, Currency: strings.ToUpper(currency), Amount: amount, Status: PayoutPending}, nil
+}
+
+type DisputeStatus string
+
+const (
+	DisputeOpen DisputeStatus = "open"
+	DisputeWon  DisputeStatus = "won"
+	DisputeLost DisputeStatus = "lost"
+)
+
+type Dispute struct {
+	ID, PaymentID, MerchantID, Currency, Reason string
+	Amount                                      decimal.Decimal
+	Status                                      DisputeStatus `json:"status"`
+}
+
+func NewDispute(paymentID, merchantID, currency, reason string, amount decimal.Decimal) (Dispute, error) {
+	if paymentID == "" || merchantID == "" || len(currency) != 3 || reason == "" || !amount.GreaterThan(decimal.Zero) {
+		return Dispute{}, errors.New("invalid dispute")
+	}
+	return Dispute{ID: uuid.NewString(), PaymentID: paymentID, MerchantID: merchantID, Currency: strings.ToUpper(currency), Reason: reason, Amount: amount, Status: DisputeOpen}, nil
 }

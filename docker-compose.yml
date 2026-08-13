@@ -43,6 +43,7 @@ services:
       - ./migrations/001_payment_ledger.sql:/docker-entrypoint-initdb.d/001_payment_ledger.sql:ro
       - ./migrations/002_partial_payments.sql:/docker-entrypoint-initdb.d/002_partial_payments.sql:ro
       - ./migrations/003_payouts.sql:/docker-entrypoint-initdb.d/003_payouts.sql:ro
+      - ./migrations/004_payouts_disputes.sql:/docker-entrypoint-initdb.d/004_payouts_disputes.sql:ro
   redis:
     image: redis:7-alpine
   nats:

@@ -18,6 +18,7 @@ are delivered through an outbox worker.
 - merchant webhooks with HMAC signatures, retry/backoff and JetStream DLQ;
 - merchant API keys, Redis-backed rate limiting and request trace IDs;
 - atomic payment state/ledger/outbox commands and merchant payouts;
+- payout terminal webhooks and dispute/chargeback ledger lifecycle;
 - fraud-risk decision boundary and provider adapter interface;
 - PostgreSQL persistence with an in-memory test store;
 - reconciliation-ready settlement model;
@@ -113,6 +114,15 @@ transaction. A failure rolls back all three records together.
 `merchant:<id>:payout_pending`. It is merchant-key protected and uses a
 PostgreSQL advisory transaction lock keyed by merchant and currency, preventing
 concurrent payout requests from overspending the available ledger balance.
+
+Provider callbacks reach `POST /v1/provider/payout-webhooks` and use the same
+HMAC and event de-duplication controls as payment webhooks. A failed payout
+atomically reverses its reservation back to merchant available balance.
+
+Admins can open and resolve disputes using the admin API. Opening a dispute
+moves the disputed amount to `dispute_frozen`; a merchant win releases it back
+to available balance, while a loss moves it to the chargeback account. Every
+transition writes its balanced entries and outbox event in the same transaction.
 
 ## Kubernetes
 

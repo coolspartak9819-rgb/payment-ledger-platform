@@ -267,5 +267,121 @@ func (s *PostgresStore) CreatePayout(ctx context.Context, p domain.Payout, entri
 	}
 	return p, nil
 }
+func (s *PostgresStore) GetPayout(ctx context.Context, id string) (domain.Payout, error) {
+	var p domain.Payout
+	err := s.pool.QueryRow(ctx, `SELECT id,merchant_id,currency,amount,status,COALESCE(provider_reference,'') FROM payouts WHERE id=$1`, id).Scan(&p.ID, &p.MerchantID, &p.Currency, &p.Amount, &p.Status, &p.ProviderReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payout{}, ErrNotFound
+	}
+	return p, err
+}
+func (s *PostgresStore) TransitionPayout(ctx context.Context, id string, status domain.PayoutStatus, reference string, entries []domain.LedgerEntry, event domain.OutboxEvent) (domain.Payout, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payout{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var p domain.Payout
+	err = tx.QueryRow(ctx, `SELECT id,merchant_id,currency,amount,status,COALESCE(provider_reference,'') FROM payouts WHERE id=$1 FOR UPDATE`, id).Scan(&p.ID, &p.MerchantID, &p.Currency, &p.Amount, &p.Status, &p.ProviderReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payout{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Payout{}, err
+	}
+	if p.Status != domain.PayoutPending || (status != domain.PayoutPaid && status != domain.PayoutFailed) {
+		return domain.Payout{}, errors.New("invalid payout transition")
+	}
+	if err = domain.ValidateBalanced(entries); err != nil {
+		return domain.Payout{}, err
+	}
+	p.Status = status
+	p.ProviderReference = reference
+	if _, err = tx.Exec(ctx, `UPDATE payouts SET status=$2,provider_reference=NULLIF($3,'') WHERE id=$1`, id, status, reference); err != nil {
+		return domain.Payout{}, err
+	}
+	for _, entry := range entries {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries (id,payment_id,account_id,currency,debit,credit) VALUES ($1,NULL,$2,$3,$4,$5)`, entry.ID, entry.AccountID, entry.Currency, entry.Debit, entry.Credit); err != nil {
+			return domain.Payout{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)`, event.ID, id, event.EventType, event.Payload); err != nil {
+		return domain.Payout{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Payout{}, err
+	}
+	return p, nil
+}
+func (s *PostgresStore) CreateDispute(ctx context.Context, d domain.Dispute, entries []domain.LedgerEntry, event domain.OutboxEvent) (domain.Dispute, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Dispute{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = domain.ValidateBalanced(entries); err != nil {
+		return domain.Dispute{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO disputes (id,payment_id,merchant_id,currency,amount,reason,status) VALUES ($1,$2,$3,$4,$5,$6,$7)`, d.ID, d.PaymentID, d.MerchantID, d.Currency, d.Amount, d.Reason, d.Status); err != nil {
+		return domain.Dispute{}, err
+	}
+	for _, entry := range entries {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries (id,payment_id,account_id,currency,debit,credit) VALUES ($1,$2,$3,$4,$5,$6)`, entry.ID, entry.PaymentID, entry.AccountID, entry.Currency, entry.Debit, entry.Credit); err != nil {
+			return domain.Dispute{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)`, event.ID, d.ID, event.EventType, event.Payload); err != nil {
+		return domain.Dispute{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Dispute{}, err
+	}
+	return d, nil
+}
+func (s *PostgresStore) GetDispute(ctx context.Context, id string) (domain.Dispute, error) {
+	var d domain.Dispute
+	err := s.pool.QueryRow(ctx, `SELECT id,payment_id,merchant_id,currency,amount,reason,status FROM disputes WHERE id=$1`, id).Scan(&d.ID, &d.PaymentID, &d.MerchantID, &d.Currency, &d.Amount, &d.Reason, &d.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Dispute{}, ErrNotFound
+	}
+	return d, err
+}
+func (s *PostgresStore) ResolveDispute(ctx context.Context, id string, status domain.DisputeStatus, entries []domain.LedgerEntry, event domain.OutboxEvent) (domain.Dispute, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Dispute{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var d domain.Dispute
+	err = tx.QueryRow(ctx, `SELECT id,payment_id,merchant_id,currency,amount,reason,status FROM disputes WHERE id=$1 FOR UPDATE`, id).Scan(&d.ID, &d.PaymentID, &d.MerchantID, &d.Currency, &d.Amount, &d.Reason, &d.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Dispute{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Dispute{}, err
+	}
+	if d.Status != domain.DisputeOpen || (status != domain.DisputeWon && status != domain.DisputeLost) {
+		return domain.Dispute{}, errors.New("invalid dispute transition")
+	}
+	if err = domain.ValidateBalanced(entries); err != nil {
+		return domain.Dispute{}, err
+	}
+	d.Status = status
+	if _, err = tx.Exec(ctx, `UPDATE disputes SET status=$2 WHERE id=$1`, id, status); err != nil {
+		return domain.Dispute{}, err
+	}
+	for _, entry := range entries {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries (id,payment_id,account_id,currency,debit,credit) VALUES ($1,$2,$3,$4,$5,$6)`, entry.ID, entry.PaymentID, entry.AccountID, entry.Currency, entry.Debit, entry.Credit); err != nil {
+			return domain.Dispute{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)`, event.ID, id, event.EventType, event.Payload); err != nil {
+		return domain.Dispute{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Dispute{}, err
+	}
+	return d, nil
+}
 
 var _ Store = (*PostgresStore)(nil)

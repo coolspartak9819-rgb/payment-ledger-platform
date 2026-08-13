@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/coolspartak9819-rgb/payment-ledger-platform/internal/domain"
+	"github.com/coolspartak9819-rgb/payment-ledger-platform/internal/service"
 	"github.com/shopspring/decimal"
 )
 
@@ -17,6 +18,12 @@ type providerWebhook struct {
 	Type      string `json:"type"`
 	PaymentID string `json:"payment_id"`
 	Amount    string `json:"amount"`
+}
+type payoutWebhook struct {
+	ID                string `json:"id"`
+	Type              string `json:"type"`
+	PayoutID          string `json:"payout_id"`
+	ProviderReference string `json:"provider_reference"`
 }
 
 func verifySignature(secret string, body []byte, signature string) bool {
@@ -30,6 +37,43 @@ func verifySignature(secret string, body []byte, signature string) bool {
 		return false
 	}
 	return hmac.Equal(mac.Sum(nil), expected)
+}
+
+func (s *Server) payoutWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if !verifySignature(s.webhookSecret, body, r.Header.Get("x-provider-signature")) {
+		write(w, 401, map[string]string{"error": "invalid webhook signature"})
+		return
+	}
+	var event payoutWebhook
+	if err = json.Unmarshal(body, &event); err != nil || event.ID == "" || event.PayoutID == "" {
+		write(w, 400, map[string]string{"error": "invalid webhook payload"})
+		return
+	}
+	if event.Type != "payout.paid" && event.Type != "payout.failed" {
+		write(w, 422, map[string]string{"error": "unsupported webhook type"})
+		return
+	}
+	accepted, err := s.payments.Store.RegisterWebhook(r.Context(), event.ID)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "webhook persistence failed"})
+		return
+	}
+	if !accepted {
+		write(w, 200, map[string]string{"status": "duplicate_ignored"})
+		return
+	}
+	payout, err := service.PayoutService{Store: s.payments.Store}.Complete(r.Context(), event.PayoutID, event.ProviderReference, event.Type == "payout.paid")
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	s.metrics.Inc("payouts_" + string(payout.Status))
+	write(w, 200, payout)
 }
 
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {

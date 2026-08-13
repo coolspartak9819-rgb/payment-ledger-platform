@@ -12,9 +12,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type Server struct{ payments *service.PaymentService }
+type Server struct {
+	payments      *service.PaymentService
+	webhookSecret string
+}
 
-func New(payments *service.PaymentService) *Server { return &Server{payments: payments} }
+func New(payments *service.PaymentService, webhookSecret string) *Server {
+	return &Server{payments: payments, webhookSecret: webhookSecret}
+}
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
@@ -25,7 +30,10 @@ func (s *Server) Routes() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/payments", s.create)
 	mux.HandleFunc("GET /v1/payments/", s.get)
-	mux.HandleFunc("POST /v1/payments/authorize", s.authorize)
+	mux.HandleFunc("POST /v1/payments/{id}/authorize", s.authorize)
+	mux.HandleFunc("POST /v1/payments/{id}/capture", s.capture)
+	mux.HandleFunc("POST /v1/payments/{id}/refund", s.refund)
+	mux.HandleFunc("POST /v1/provider/webhooks", s.webhook)
 	return mux
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -68,8 +76,24 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, p)
 }
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
+	id := r.PathValue("id")
 	p, err := s.payments.Authorize(r.Context(), id)
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	write(w, 200, p)
+}
+func (s *Server) capture(w http.ResponseWriter, r *http.Request) {
+	p, err := s.payments.Capture(r.Context(), r.PathValue("id"))
+	if err != nil {
+		write(w, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	write(w, 200, p)
+}
+func (s *Server) refund(w http.ResponseWriter, r *http.Request) {
+	p, err := s.payments.Refund(r.Context(), r.PathValue("id"))
 	if err != nil {
 		write(w, 422, map[string]string{"error": err.Error()})
 		return

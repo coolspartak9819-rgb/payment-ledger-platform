@@ -13,6 +13,7 @@ are delivered through an outbox worker.
 - explicit state machine: `created`, `authorized`, `captured`, `refunded`, `failed`;
 - double-entry ledger with debit/credit balance validation;
 - transactional outbox for provider and webhook events;
+- NATS JetStream publisher with broker-level event de-duplication;
 - fraud-risk decision boundary and provider adapter interface;
 - PostgreSQL persistence with an in-memory test store;
 - reconciliation-ready settlement model;
@@ -30,6 +31,15 @@ delivery. An unacknowledged lease expires and can be retried after one minute.
 go test ./...
 go vet ./...
 docker compose up --build
+go run ./scripts/load.go
+```
+
+The load scenario defaults to 500 concurrent-safe create requests. Adjust it
+with `TOTAL=5000 CONCURRENCY=100 go run ./scripts/load.go`. PostgreSQL
+integration coverage is opt-in to keep normal unit tests deterministic:
+
+```bash
+TEST_DATABASE_URL=postgresql://payments:payments@localhost:5432/payments go test ./internal/store -run Postgres
 ```
 
 Create an idempotent payment:
@@ -60,6 +70,10 @@ replay of the original payment. Each authorization adds exactly two balanced
 ledger entries: a debit from the customer pending account and a credit to the
 merchant pending account. A production provider adapter would use its own
 idempotency key and signed webhooks before moving funds to `captured`.
+
+When `NATS_URL` is configured, the worker publishes outbox events to the
+`payments.events` JetStream subject with the outbox event ID as `Nats-Msg-Id`.
+JetStream then suppresses duplicate broker publishes during retry windows.
 
 ## Kubernetes
 

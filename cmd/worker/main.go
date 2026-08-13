@@ -21,7 +21,16 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
-	worker := service.OutboxWorker{Store: store.NewPostgres(pool), Publisher: service.LogPublisher{}}
+	publisher := service.EventPublisher(service.LogPublisher{})
+	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
+		natsPublisher, closeNATS, err := service.NewNATSPublisher(natsURL)
+		if err != nil {
+			log.Fatalf("NATS initialization failed: %v", err)
+		}
+		defer func() { _ = closeNATS() }()
+		publisher = natsPublisher
+	}
+	worker := service.OutboxWorker{Store: store.NewPostgres(pool), Publisher: publisher}
 	for {
 		if err := worker.Deliver(context.Background(), 100); err != nil {
 			log.Printf("outbox delivery failed: %v", err)

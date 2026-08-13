@@ -64,3 +64,25 @@ func TestLedgerRejectsUnbalancedTransaction(t *testing.T) {
 		t.Fatal("expected unbalanced ledger error")
 	}
 }
+func TestCaptureAndRefundCompletePaymentLifecycle(t *testing.T) {
+	s := newService("1000")
+	p, _, err := s.Create(context.Background(), input("24.50"), "order-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Authorize(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := s.Capture(context.Background(), p.ID)
+	if err != nil || captured.Status != domain.PaymentCaptured {
+		t.Fatalf("capture status=%s err=%v", captured.Status, err)
+	}
+	refunded, err := s.Refund(context.Background(), p.ID)
+	if err != nil || refunded.Status != domain.PaymentRefunded {
+		t.Fatalf("refund status=%s err=%v", refunded.Status, err)
+	}
+	events, err := s.Store.ClaimOutbox(context.Background(), 10)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("expected 3 lifecycle events, got %d, error=%v", len(events), err)
+	}
+}

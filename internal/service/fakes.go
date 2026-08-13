@@ -11,6 +11,8 @@ type DeterministicProvider struct{}
 func (DeterministicProvider) Authorize(_ context.Context, p domain.Payment) (string, error) {
 	return "demo_" + p.ID[:8], nil
 }
+func (DeterministicProvider) Capture(_ context.Context, _ domain.Payment) error { return nil }
+func (DeterministicProvider) Refund(_ context.Context, _ domain.Payment) error  { return nil }
 
 type ThresholdRisk struct{ MaxAmount string }
 

@@ -12,6 +12,8 @@ import (
 
 type Provider interface {
 	Authorize(context.Context, domain.Payment) (string, error)
+	Capture(context.Context, domain.Payment) error
+	Refund(context.Context, domain.Payment) error
 }
 type RiskEngine interface {
 	Check(context.Context, domain.Payment) (bool, error)
@@ -71,7 +73,54 @@ func (s *PaymentService) Authorize(ctx context.Context, id string) (domain.Payme
 	if err := s.Store.AppendLedger(ctx, entries); err != nil {
 		return p, err
 	}
-	payload, _ := json.Marshal(updated)
-	_ = s.Store.Enqueue(ctx, domain.OutboxEvent{ID: uuid.NewString(), AggregateID: id, EventType: "payment.authorized", Payload: string(payload)})
-	return updated, nil
+	return s.enqueue(ctx, updated, "payment.authorized")
+}
+
+func (s *PaymentService) Capture(ctx context.Context, id string) (domain.Payment, error) {
+	p, err := s.Store.GetPayment(ctx, id)
+	if err != nil {
+		return p, err
+	}
+	if err = s.Provider.Capture(ctx, p); err != nil {
+		return p, err
+	}
+	updated, err := s.Store.Transition(ctx, id, domain.PaymentCaptured, p.ProviderReference)
+	if err != nil {
+		return p, err
+	}
+	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:pending", Currency: p.Currency, Debit: p.Amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:available", Currency: p.Currency, Credit: p.Amount}}
+	if err = s.Store.AppendLedger(ctx, entries); err != nil {
+		return p, err
+	}
+	return s.enqueue(ctx, updated, "payment.captured")
+}
+
+func (s *PaymentService) Refund(ctx context.Context, id string) (domain.Payment, error) {
+	p, err := s.Store.GetPayment(ctx, id)
+	if err != nil {
+		return p, err
+	}
+	if err = s.Provider.Refund(ctx, p); err != nil {
+		return p, err
+	}
+	updated, err := s.Store.Transition(ctx, id, domain.PaymentRefunded, p.ProviderReference)
+	if err != nil {
+		return p, err
+	}
+	entries := []domain.LedgerEntry{{ID: uuid.NewString(), PaymentID: id, AccountID: "merchant:available", Currency: p.Currency, Debit: p.Amount}, {ID: uuid.NewString(), PaymentID: id, AccountID: "customer:refunded", Currency: p.Currency, Credit: p.Amount}}
+	if err = s.Store.AppendLedger(ctx, entries); err != nil {
+		return p, err
+	}
+	return s.enqueue(ctx, updated, "payment.refunded")
+}
+
+func (s *PaymentService) enqueue(ctx context.Context, p domain.Payment, eventType string) (domain.Payment, error) {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return p, err
+	}
+	if err := s.Store.Enqueue(ctx, domain.OutboxEvent{ID: uuid.NewString(), AggregateID: p.ID, EventType: eventType, Payload: string(payload)}); err != nil {
+		return p, err
+	}
+	return p, nil
 }

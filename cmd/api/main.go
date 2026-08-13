@@ -31,7 +31,7 @@ func main() {
 	}
 	payments := &service.PaymentService{Store: persistence, Provider: service.DeterministicProvider{}, Risk: service.ThresholdRisk{MaxAmount: "10000"}}
 	log.Printf("payment ledger API started on port %s", port)
-	if err := http.ListenAndServe(":"+port, httpapi.New(payments).Routes()); err != nil {
+	if err := http.ListenAndServe(":"+port, httpapi.New(payments, os.Getenv("PROVIDER_WEBHOOK_SECRET")).Routes()); err != nil {
 		log.Printf("API stopped: %v", err)
 		os.Exit(1)
 	}

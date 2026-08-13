@@ -113,5 +113,9 @@ func (s *PostgresStore) MarkPublished(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE outbox_events SET published_at=now() WHERE id=$1`, id)
 	return err
 }
+func (s *PostgresStore) RegisterWebhook(ctx context.Context, id string) (bool, error) {
+	command, err := s.pool.Exec(ctx, `INSERT INTO processed_webhooks (event_id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
+	return command.RowsAffected() == 1, err
+}
 
 var _ Store = (*PostgresStore)(nil)

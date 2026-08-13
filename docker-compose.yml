@@ -5,6 +5,7 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: postgresql://payments:payments@postgres:5432/payments
+      NATS_URL: nats://nats:4222
     depends_on:
       postgres:
         condition: service_healthy
@@ -15,6 +16,12 @@ services:
     entrypoint: ["/payment-worker"]
     environment:
       DATABASE_URL: postgresql://payments:payments@postgres:5432/payments
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
   postgres:
     image: postgres:16-alpine
     environment:
@@ -31,5 +38,10 @@ services:
       - ./migrations/001_payment_ledger.sql:/docker-entrypoint-initdb.d/001_payment_ledger.sql:ro
   redis:
     image: redis:7-alpine
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data"]
+    volumes: ["nats-data:/data"]
 volumes:
   postgres-data:
+  nats-data:

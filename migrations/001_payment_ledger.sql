@@ -35,3 +35,7 @@ CREATE TABLE outbox_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX outbox_unpublished_idx ON outbox_events (created_at) WHERE published_at IS NULL;
+CREATE TABLE processed_webhooks (
+  event_id text PRIMARY KEY,
+  received_at timestamptz NOT NULL DEFAULT now()
+);

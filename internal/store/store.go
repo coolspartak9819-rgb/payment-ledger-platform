@@ -18,6 +18,7 @@ type Store interface {
 	Enqueue(context.Context, domain.OutboxEvent) error
 	ClaimOutbox(context.Context, int) ([]domain.OutboxEvent, error)
 	MarkPublished(context.Context, string) error
+	RegisterWebhook(context.Context, string) (bool, error)
 }
 
 type MemoryStore struct {
@@ -26,10 +27,11 @@ type MemoryStore struct {
 	keys     map[string]string
 	outbox   map[string]domain.OutboxEvent
 	ledger   []domain.LedgerEntry
+	webhooks map[string]struct{}
 }
 
 func NewMemory() *MemoryStore {
-	return &MemoryStore{payments: map[string]domain.Payment{}, keys: map[string]string{}, outbox: map[string]domain.OutboxEvent{}}
+	return &MemoryStore{payments: map[string]domain.Payment{}, keys: map[string]string{}, outbox: map[string]domain.OutboxEvent{}, webhooks: map[string]struct{}{}}
 }
 func (s *MemoryStore) CreatePayment(_ context.Context, p domain.Payment, key string) (domain.Payment, bool, error) {
 	s.mu.Lock()
@@ -103,4 +105,13 @@ func (s *MemoryStore) MarkPublished(_ context.Context, id string) error {
 	e.Published = true
 	s.outbox[id] = e
 	return nil
+}
+func (s *MemoryStore) RegisterWebhook(_ context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.webhooks[id]; exists {
+		return false, nil
+	}
+	s.webhooks[id] = struct{}{}
+	return true, nil
 }

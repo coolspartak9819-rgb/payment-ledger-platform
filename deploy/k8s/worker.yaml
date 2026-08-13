@@ -18,6 +18,8 @@ spec:
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: payment-platform, key: DATABASE_URL } }
+            - name: NATS_URL
+              valueFrom: { secretKeyRef: { name: payment-platform, key: NATS_URL } }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 256Mi }

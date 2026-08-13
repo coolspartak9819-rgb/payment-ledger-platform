@@ -1,0 +1,35 @@
+services:
+  api:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgresql://payments:payments@postgres:5432/payments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+  worker:
+    build: .
+    entrypoint: ["/payment-worker"]
+    environment:
+      DATABASE_URL: postgresql://payments:payments@postgres:5432/payments
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations/001_payment_ledger.sql:/docker-entrypoint-initdb.d/001_payment_ledger.sql:ro
+  redis:
+    image: redis:7-alpine
+volumes:
+  postgres-data:

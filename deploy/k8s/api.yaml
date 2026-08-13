@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: payments
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: payment-api }
+  template:
+    metadata:
+      labels: { app: payment-api }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/coolspartak9819-rgb/payment-ledger-platform:latest
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: payment-platform, key: DATABASE_URL } }
+          readinessProbe: { httpGet: { path: /readyz, port: http }, initialDelaySeconds: 5 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10 }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  namespace: payments
+spec:
+  selector: { app: payment-api }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-api
+  namespace: payments
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: payment-api }
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }

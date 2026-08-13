@@ -6,6 +6,9 @@ services:
       PORT: "8080"
       DATABASE_URL: postgresql://payments:payments@postgres:5432/payments
       NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+      MERCHANT_API_KEYS: ${MERCHANT_API_KEYS:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       MERCHANT_WEBHOOK_URL: ${MERCHANT_WEBHOOK_URL:-}
       MERCHANT_WEBHOOK_SECRET: ${MERCHANT_WEBHOOK_SECRET:-}
     depends_on:

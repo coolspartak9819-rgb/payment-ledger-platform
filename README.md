@@ -16,6 +16,7 @@ are delivered through an outbox worker.
 - NATS JetStream publisher with broker-level event de-duplication;
 - settlement reconciliation service for provider-report mismatches;
 - merchant webhooks with HMAC signatures, retry/backoff and JetStream DLQ;
+- merchant API keys, Redis-backed rate limiting and request trace IDs;
 - fraud-risk decision boundary and provider adapter interface;
 - PostgreSQL persistence with an in-memory test store;
 - reconciliation-ready settlement model;
@@ -87,6 +88,19 @@ Set `MERCHANT_WEBHOOK_URL` and `MERCHANT_WEBHOOK_SECRET` on the worker to
 deliver payment events to a merchant endpoint. Delivery retries three times
 with bounded backoff. Failures are retained in `payments.webhooks.dlq` for
 review, while normal payment events remain in `payments.events`.
+
+## Operations and access
+
+Set `MERCHANT_API_KEYS=key:merchant-id,key:merchant-id` to require a merchant
+API key on payment endpoints. The authenticated key must match the request
+`merchant_id`, and it cannot read or mutate another merchant's payment.
+`REDIS_URL` enables a distributed fixed-window rate limiter; the API falls
+back to in-memory limiting only for local development when Redis is absent.
+
+Use `ADMIN_API_KEY` on `POST /v1/admin/reconciliation` to submit provider
+settlement rows. The endpoint returns mismatches for a review workflow. Every
+HTTP response carries `x-request-id`; an inbound W3C `traceparent` is echoed
+to allow trace correlation across service boundaries.
 
 ## Kubernetes
 

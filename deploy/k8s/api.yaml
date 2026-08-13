@@ -18,6 +18,10 @@ spec:
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: payment-platform, key: DATABASE_URL } }
+            - name: MERCHANT_API_KEYS
+              valueFrom: { secretKeyRef: { name: payment-platform, key: MERCHANT_API_KEYS } }
+            - name: ADMIN_API_KEY
+              valueFrom: { secretKeyRef: { name: payment-platform, key: ADMIN_API_KEY } }
           readinessProbe: { httpGet: { path: /readyz, port: http }, initialDelaySeconds: 5 }
           livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10 }
           resources:
